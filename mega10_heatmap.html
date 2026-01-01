@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mega10 Heatmap (Finnhub)</title>
+
+  <!-- D3.js（treemap用） -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+
+  <style>
+    :root{
+      --bg:#0b0f14;
+      --panel:#0f1620;
+      --text:#ffffff;
+      --muted:#ffffff;
+      --border:rgba(255,255,255,.10);
+    }
+    body{
+      margin:0;
+      font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+      background:var(--bg);
+      color:var(--text);
+    }
+    header{
+      padding:14px 16px;
+      border-bottom:1px solid var(--border);
+      display:flex;
+      gap:12px;
+      align-items:baseline;
+      flex-wrap:wrap;
+    }
+    header h1{
+      font-size:16px;
+      margin:0;
+      font-weight:700;
+    }
+    header .sub{
+      font-size:12px;
+      color:var(--muted);
+    }
+    .wrap{
+      padding:12px;
+    }
+    .legend{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      margin:10px 0 12px 0;
+      color:var(--muted);
+      font-size:12px;
+      flex-wrap:wrap;
+    }
+    .legend div[style*="opacity"]{ opacity:1 !important; }
+    .legend .bar{
+      width:260px;
+      height:10px;
+      border-radius:999px;
+      /* TradingViewっぽい赤→白→緑 */
+      background: linear-gradient(
+        90deg,
+        #7b1022 0%,
+        #f05261 20%,
+        #f8f4f2 50%,
+        #66cf7a 80%,
+        #15803d 100%
+      );
+      border:1px solid var(--border);
+    }
+    #chart{
+      position:relative;
+      width:min(1100px, 100%);
+      height:680px;
+      background:var(--panel);
+      color:#ffffff;
+      border:1px solid var(--border);
+      border-radius:14px;
+      overflow:hidden;
+    }
+
+    .status{
+      font-size:12px;
+      color:var(--muted);
+      margin-left:4px;
+    }
+    #chart div[style*="color:#a7b3c2"]{ color:#ffffff !important; }
+
+    /* セクタ見出し */
+    .sector-label{
+      position:absolute;
+      padding:6px 8px;
+      font-size:12px;
+      color:#ffffff;
+      background:rgba(0,0,0,.25);
+      border:1px solid rgba(255,255,255,.08);
+      border-radius:10px;
+      pointer-events:none;
+      backdrop-filter: blur(4px);
+    }
+
+    /* 銘柄ブロック */
+    .cell{
+      position:absolute;
+      border:1px solid rgba(255,255,255,.12);
+      border-radius:12px;
+      overflow:hidden;
+      display:flex;
+      flex-direction:column;
+      justify-content:space-between;
+      padding:10px;
+      box-sizing:border-box;
+      cursor:default;
+      transition: transform .08s ease;
+    }
+    .cell:hover{ transform: translateY(-1px); }
+
+    .top{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:8px;
+      min-height:22px;
+    }
+    .symbol{
+      font-weight:800;
+      letter-spacing:.2px;
+      line-height:1.0;
+    }
+    .name{
+      font-size:12px;
+      color:#ffffff;
+      margin-top:6px;
+      line-height:1.2;
+      overflow:hidden;
+      display:-webkit-box;
+      -webkit-box-orient:vertical;
+      line-clamp:2;
+      -webkit-line-clamp:2;
+    }
+    .pct{
+      font-weight:800;
+      font-variant-numeric: tabular-nums;
+      text-align:right;
+      white-space:nowrap;
+    }
+    .bottom{
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-end;
+      gap:8px;
+      font-size:12px;
+      color:#ffffff;
+      font-variant-numeric: tabular-nums;
+    }
+    .cap{ opacity:1; }
+    .source{ opacity:1; }
+
+    /* ツールチップ */
+    .tip{
+      position:fixed;
+      z-index:9999;
+      padding:10px 12px;
+      background:rgba(12,18,28,.96);
+      border:1px solid rgba(255,255,255,.12);
+      border-radius:12px;
+      box-shadow:0 12px 30px rgba(0,0,0,.35);
+      pointer-events:none;
+      min-width:220px;
+      display:none;
+    }
+    .tip .t1{ font-weight:800; margin-bottom:6px; }
+    .tip .row{ display:flex; justify-content:space-between; gap:10px; color:#ffffff; font-size:12px; }
+    .tip .row span:first-child{ color:#ffffff; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>メガ10 ヒートマップ（Finnhub連携版）</h1>
+    <div class="sub">サイズ＝時価総額（FinnhubのmarketCapitalization），色＝騰落率dp（%）．</div>
+  </header>
+
+  <div class="wrap">
+    <div class="legend">
+      <div class="bar" aria-label="legend"></div>
+      <div>-1.5% くらい</div>
+      <div style="opacity:.7">→</div>
+      <div>0%</div>
+      <div style="opacity:.7">→</div>
+      <div>+1.5% くらい</div>
+      <div style="margin-left:auto" id="stamp"></div>
+    </div>
+    <div class="status" id="status">Finnhubからデータ取得中…</div>
+
+    <div id="chart"></div>
+  </div>
+
+  <div class="tip" id="tip"></div>
+
+  <script>
+    // ★★★ ここを自分のFinnhub APIキーに差し替える ★★★
+    const API_KEY = "d5at3nhr01qh7ajj31h0d5at3nhr01qh7ajj31hg";
+
+    // メガ10銘柄（今回の指定どおり）
+    // sector はTradingViewっぽい分け方を日本語でざっくり付けているだけである．
+    const BASE_TICKERS = [
+      { symbol:"NVDA",  company:"NVIDIA",              jpName:"エヌビディア",                 sector:"半導体・電子テクノロジー" },
+      { symbol:"MSFT",  company:"Microsoft",           jpName:"マイクロソフト",               sector:"テクノロジーサービス" },
+      { symbol:"AMZN",  company:"Amazon.com",          jpName:"アマゾン・ドット・コム",       sector:"小売・インターネット" },
+      { symbol:"GOOGL", company:"Alphabet Class A",    jpName:"アルファベット（クラスA）",    sector:"テクノロジーサービス" },
+      { symbol:"AVGO",  company:"Broadcom",            jpName:"ブロードコム",                 sector:"半導体・電子テクノロジー" },
+      { symbol:"META",  company:"Meta Platforms",      jpName:"メタ・プラットフォームズ",     sector:"コミュニケーションサービス" },
+      { symbol:"TSLA",  company:"Tesla",               jpName:"テスラ",                       sector:"自動車・耐久消費財" },
+      { symbol:"LLY",   company:"Eli Lilly and Co.",   jpName:"イーライリリー",               sector:"ヘルスケア" },
+      { symbol:"V",     company:"Visa",                jpName:"ビザ",                         sector:"金融" },
+      { symbol:"MA",    company:"Mastercard",          jpName:"マスターカード",               sector:"金融" },
+    ];
+
+    // 描画に使う完成データ
+    let data = [];
+
+    const statusEl = document.getElementById("status");
+
+    const fmtPct = v => {
+      if (v === null || v === undefined || isNaN(v)) return "N/A";
+      return (v>=0? "+" : "") + v.toFixed(2) + "%";
+    };
+
+    // FinnhubのmarketCapitalizationは「十億ドル（B）」単位なので，
+    // 表示は B / T としつつ，面積計算もその数値をそのまま使う．
+    const fmtCap = v => {
+      if (v === null || v === undefined || isNaN(v)) return "N/A";
+      if (v >= 1000) return (v/1000).toFixed(2) + "T"; // 1000B = 1T
+      return v.toFixed(1) + "B";
+    };
+
+    // TradingViewのバーを意識した色スケール（-3〜+3%を主レンジ）
+    const color = d3.scaleLinear()
+      .domain([-3, -1.5, 0, 1.5, 3])
+      .range ([
+        "#7b1022",  // 濃い赤
+        "#f05261",  // 明るい赤
+        "#f8f4f2",  // 白に近い
+        "#66cf7a",  // 明るい緑
+        "#15803d"   // 濃い緑
+      ])
+      .clamp(true);
+
+    // sectorで階層化してtreemap
+    function buildHierarchy(items){
+      const bySector = d3.group(items, d => d.sector);
+      const root = { name:"root", children: [] };
+      for (const [sector, arr] of bySector.entries()){
+        root.children.push({
+          name: sector,
+          children: arr.map(d => ({
+            ...d,
+            // value が小さすぎると見えないので下限を少し持ち上げる
+            value: Math.max(1, d.marketCap || 1)
+          }))
+        });
+      }
+      return d3.hierarchy(root)
+        .sum(d => d.value || 0)
+        .sort((a,b) => (b.value||0) - (a.value||0));
+    }
+
+    function render(){
+      const chart = document.getElementById("chart");
+      chart.innerHTML = "";
+
+      if (!data.length){
+        chart.innerHTML = "<div style='padding:16px;font-size:13px;color:#a7b3c2;'>データが取得できませんでした．APIキーやネットワーク設定を確認してほしい．</div>";
+        return;
+      }
+
+      const rect = chart.getBoundingClientRect();
+      const width = rect.width;
+      const height = rect.height;
+
+      const root = buildHierarchy(data);
+
+      d3.treemap()
+        .size([width, height])
+        .paddingInner(6)
+        .paddingOuter(10)
+        .paddingTop(d => d.depth === 1 ? 30 : 0)
+        (root);
+
+      const tip = document.getElementById("tip");
+
+      // セクタラベル
+      root.children.forEach(sec => {
+        const label = document.createElement("div");
+        label.className = "sector-label";
+        label.style.left = (sec.x0 + 6) + "px";
+        label.style.top  = (sec.y0 + 6) + "px";
+        label.textContent = sec.data.name;
+        chart.appendChild(label);
+      });
+
+      // 銘柄セル
+      root.leaves().forEach(leaf => {
+        const d = leaf.data;
+        const cell = document.createElement("div");
+        cell.className = "cell";
+        cell.style.left = leaf.x0 + "px";
+        cell.style.top  = leaf.y0 + "px";
+        cell.style.width  = Math.max(0, leaf.x1 - leaf.x0) + "px";
+        cell.style.height = Math.max(0, leaf.y1 - leaf.y0) + "px";
+        cell.style.background = isNaN(d.changePct) ? "#374151" : color(d.changePct);
+
+        const w = leaf.x1 - leaf.x0;
+        const h = leaf.y1 - leaf.y0;
+        const compact = (w < 160 || h < 110);
+
+        const labelName = `${d.jpName}（${d.company}）`;
+
+        cell.innerHTML = `
+          <div class="top">
+            <div>
+              <div class="symbol" style="font-size:${compact? "14px":"22px"}">${d.symbol}</div>
+              ${compact ? "" : `<div class="name">${labelName}</div>`}
+            </div>
+            <div class="pct" style="font-size:${compact? "14px":"20px"}">${fmtPct(d.changePct)}</div>
+          </div>
+          <div class="bottom">
+            <div class="cap">MCap ${fmtCap(d.marketCap)}</div>
+            <div class="source">${compact ? "" : "Mega10"}</div>
+          </div>
+        `;
+
+        cell.addEventListener("mousemove", (e) => {
+          tip.style.display = "block";
+          tip.style.left = (e.clientX + 14) + "px";
+          tip.style.top  = (e.clientY + 14) + "px";
+          tip.innerHTML = `
+            <div class="t1">${d.symbol}　${labelName}</div>
+            <div class="row"><span>セクター</span><span>${d.sector}</span></div>
+            <div class="row"><span>騰落率</span><span>${fmtPct(d.changePct)}</span></div>
+            <div class="row"><span>時価総額</span><span>${fmtCap(d.marketCap)} USD</span></div>
+          `;
+        });
+        cell.addEventListener("mouseleave", () => {
+          tip.style.display = "none";
+        });
+
+        chart.appendChild(cell);
+      });
+    }
+
+    // Finnhubから1銘柄ぶんのデータを取得
+    async function fetchForSymbol(base){
+      const symbol = base.symbol;
+      const qs = `token=${encodeURIComponent(API_KEY)}&symbol=${encodeURIComponent(symbol)}`;
+
+      // quote と profile2 を並列で叩く
+      const [quoteRes, profRes] = await Promise.all([
+        fetch(`https://finnhub.io/api/v1/quote?${qs}`),
+        fetch(`https://finnhub.io/api/v1/stock/profile2?${qs}`)
+      ]);
+
+      if (!quoteRes.ok) throw new Error("quote error " + symbol);
+      if (!profRes.ok) throw new Error("profile2 error " + symbol);
+
+      const quote = await quoteRes.json();
+      const prof  = await profRes.json();
+
+      // quote.dp: percent change, might be undefined → NaNにしておく
+      const changePct = typeof quote.dp === "number" ? quote.dp : NaN;
+
+      // profile2.marketCapitalization: 十億ドル（B）
+      const rawCap = typeof prof.marketCapitalization === "number" ? prof.marketCapitalization : NaN;
+
+      return {
+        symbol: base.symbol,
+        company: base.company,
+        jpName: base.jpName,
+        sector: base.sector,
+        changePct,
+        marketCap: rawCap
+      };
+    }
+
+    async function init(){
+      const now = new Date();
+      document.getElementById("stamp").textContent =
+        "取得：" + now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0") + "-" + String(now.getDate()).padStart(2,"0")
+        + " " + String(now.getHours()).padStart(2,"0") + ":" + String(now.getMinutes()).padStart(2,"0");
+
+      if (!API_KEY || API_KEY === "YOUR_FINNHUB_API_KEY_HERE"){
+        statusEl.textContent = "APIキーが設定されていないため，サンプルとして空の図を表示している．コード内の API_KEY をFinnhubのキーに差し替える必要がある．";
+        render();
+        return;
+      }
+
+      try{
+        statusEl.textContent = "Finnhubからデータ取得中…";
+
+        const results = [];
+        for (const base of BASE_TICKERS){
+          try{
+            const item = await fetchForSymbol(base);
+            results.push(item);
+          }catch(e){
+            console.error("Error fetching", base.symbol, e);
+            // 失敗した銘柄も枠だけは出したいのでNaNで埋める
+            results.push({
+              symbol: base.symbol,
+              company: base.company,
+              jpName: base.jpName,
+              sector: base.sector,
+              changePct: NaN,
+              marketCap: NaN
+            });
+          }
+        }
+
+        data = results;
+        statusEl.textContent = "Finnhubからの取得完了（いくつかNaNの場合はAPI応答なし）．";
+        render();
+      }catch(e){
+        console.error(e);
+        statusEl.textContent = "データ取得に失敗した．APIキーやCORS設定を確認してほしい．";
+        render();
+      }
+    }
+
+    // リサイズ対応
+    let rto = null;
+    window.addEventListener("resize", () => {
+      clearTimeout(rto);
+      rto = setTimeout(render, 80);
+    });
+
+    init();
+  </script>
+</body>
+</html>
