@@ -197,11 +197,11 @@
   <div class="tip" id="tip"></div>
 
   <script>
-    // ★★★ ここを自分のFinnhub APIキーに差し替える ★★★
-    const API_KEY = "d5at3nhr01qh7ajj31h0d5at3nhr01qh7ajj31hg";
+    // ここでは Finnhub API は叩かない．
+    // GitHub Actions が更新した data/latest.json を読むだけである．
+    const DATA_URL = "data/latest.json";
 
-    // メガ10銘柄（今回の指定どおり）
-    // sector はTradingViewっぽい分け方を日本語でざっくり付けているだけである．
+    // メガ10銘柄の基本情報（日本語名＋セクタ）
     const BASE_TICKERS = [
       { symbol:"NVDA",  company:"NVIDIA",              jpName:"エヌビディア",                 sector:"半導体・電子テクノロジー" },
       { symbol:"MSFT",  company:"Microsoft",           jpName:"マイクロソフト",               sector:"テクノロジーサービス" },
@@ -212,40 +212,32 @@
       { symbol:"TSLA",  company:"Tesla",               jpName:"テスラ",                       sector:"自動車・耐久消費財" },
       { symbol:"LLY",   company:"Eli Lilly and Co.",   jpName:"イーライリリー",               sector:"ヘルスケア" },
       { symbol:"V",     company:"Visa",                jpName:"ビザ",                         sector:"金融" },
-      { symbol:"MA",    company:"Mastercard",          jpName:"マスターカード",               sector:"金融" },
+      { symbol:"MA",    company:"Mastercard",          jpName:"マスターカード",               sector:"金融" }
     ];
 
-    // 描画に使う完成データ
     let data = [];
 
     const statusEl = document.getElementById("status");
+    const stampEl  = document.getElementById("stamp");
 
     const fmtPct = v => {
       if (v === null || v === undefined || isNaN(v)) return "N/A";
       return (v>=0? "+" : "") + v.toFixed(2) + "%";
     };
 
-    // FinnhubのmarketCapitalizationは「十億ドル（B）」単位なので，
-    // 表示は B / T としつつ，面積計算もその数値をそのまま使う．
     const fmtCap = v => {
       if (v === null || v === undefined || isNaN(v)) return "N/A";
       if (v >= 1000) return (v/1000).toFixed(2) + "T"; // 1000B = 1T
       return v.toFixed(1) + "B";
     };
 
-    // TradingViewのバーを意識した色スケール（-3〜+3%を主レンジ）
+    // TradingView風の赤→白→緑
     const color = d3.scaleLinear()
       .domain([-3, -1.5, 0, 1.5, 3])
-      .range ([
-        "#7b1022",  // 濃い赤
-        "#f05261",  // 明るい赤
-        "#f8f4f2",  // 白に近い
-        "#66cf7a",  // 明るい緑
-        "#15803d"   // 濃い緑
-      ])
+      .range(["#7b1022","#f05261","#f8f4f2","#66cf7a","#15803d"])
       .clamp(true);
 
-    // sectorで階層化してtreemap
+    // sector で階層化して treemap 用のデータにする
     function buildHierarchy(items){
       const bySector = d3.group(items, d => d.sector);
       const root = { name:"root", children: [] };
@@ -254,7 +246,6 @@
           name: sector,
           children: arr.map(d => ({
             ...d,
-            // value が小さすぎると見えないので下限を少し持ち上げる
             value: Math.max(1, d.marketCap || 1)
           }))
         });
@@ -269,7 +260,7 @@
       chart.innerHTML = "";
 
       if (!data.length){
-        chart.innerHTML = "<div style='padding:16px;font-size:13px;color:#a7b3c2;'>データが取得できませんでした．APIキーやネットワーク設定を確認してほしい．</div>";
+        chart.innerHTML = "<div style='padding:16px;font-size:13px;color:#ffffff;'>データがありません．GitHub Actions が data/latest.json を更新しているか確認してほしい．</div>";
         return;
       }
 
@@ -303,8 +294,8 @@
         const d = leaf.data;
         const cell = document.createElement("div");
         cell.className = "cell";
-        cell.style.left = leaf.x0 + "px";
-        cell.style.top  = leaf.y0 + "px";
+        cell.style.left   = leaf.x0 + "px";
+        cell.style.top    = leaf.y0 + "px";
         cell.style.width  = Math.max(0, leaf.x1 - leaf.x0) + "px";
         cell.style.height = Math.max(0, leaf.y1 - leaf.y0) + "px";
         cell.style.background = isNaN(d.changePct) ? "#374151" : color(d.changePct);
@@ -312,7 +303,6 @@
         const w = leaf.x1 - leaf.x0;
         const h = leaf.y1 - leaf.y0;
         const compact = (w < 160 || h < 110);
-
         const labelName = `${d.jpName}（${d.company}）`;
 
         cell.innerHTML = `
@@ -348,84 +338,45 @@
       });
     }
 
-    // Finnhubから1銘柄ぶんのデータを取得
-    async function fetchForSymbol(base){
-      const symbol = base.symbol;
-      const qs = `token=${encodeURIComponent(API_KEY)}&symbol=${encodeURIComponent(symbol)}`;
-
-      // quote と profile2 を並列で叩く
-      const [quoteRes, profRes] = await Promise.all([
-        fetch(`https://finnhub.io/api/v1/quote?${qs}`),
-        fetch(`https://finnhub.io/api/v1/stock/profile2?${qs}`)
-      ]);
-
-      if (!quoteRes.ok) throw new Error("quote error " + symbol);
-      if (!profRes.ok) throw new Error("profile2 error " + symbol);
-
-      const quote = await quoteRes.json();
-      const prof  = await profRes.json();
-
-      // quote.dp: percent change, might be undefined → NaNにしておく
-      const changePct = typeof quote.dp === "number" ? quote.dp : NaN;
-
-      // profile2.marketCapitalization: 十億ドル（B）
-      const rawCap = typeof prof.marketCapitalization === "number" ? prof.marketCapitalization : NaN;
-
-      return {
-        symbol: base.symbol,
-        company: base.company,
-        jpName: base.jpName,
-        sector: base.sector,
-        changePct,
-        marketCap: rawCap
-      };
-    }
-
     async function init(){
-      const now = new Date();
-      document.getElementById("stamp").textContent =
-        "取得：" + now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0") + "-" + String(now.getDate()).padStart(2,"0")
-        + " " + String(now.getHours()).padStart(2,"0") + ":" + String(now.getMinutes()).padStart(2,"0");
-
-      if (!API_KEY || API_KEY === "YOUR_FINNHUB_API_KEY_HERE"){
-        statusEl.textContent = "APIキーが設定されていないため，サンプルとして空の図を表示している．コード内の API_KEY をFinnhubのキーに差し替える必要がある．";
-        render();
-        return;
-      }
-
       try{
-        statusEl.textContent = "Finnhubからデータ取得中…";
+        statusEl.textContent = "data/latest.json を取得中…";
+        const res = await fetch(DATA_URL + "?t=" + Date.now()); // キャッシュ対策
+        const json = await res.json();
 
-        const results = [];
-        for (const base of BASE_TICKERS){
-          try{
-            const item = await fetchForSymbol(base);
-            results.push(item);
-          }catch(e){
-            console.error("Error fetching", base.symbol, e);
-            // 失敗した銘柄も枠だけは出したいのでNaNで埋める
-            results.push({
-              symbol: base.symbol,
-              company: base.company,
-              jpName: base.jpName,
-              sector: base.sector,
-              changePct: NaN,
-              marketCap: NaN
-            });
-          }
+        if (json.updated){
+          // ISO文字列 "2026-01-01T12:34:56Z" を少し整形
+          stampEl.textContent = "最終更新：" + json.updated.replace("T"," ").replace("Z","");
         }
 
-        data = results;
-        statusEl.textContent = "Finnhubからの取得完了（いくつかNaNの場合はAPI応答なし）．";
+        const bySymbol = {};
+        for (const it of (json.items || [])){
+          bySymbol[it.symbol] = it;
+        }
+
+        // BASE_TICKERS と latest.json をマージ
+        data = BASE_TICKERS.map(b => {
+          const m = bySymbol[b.symbol] || {};
+          return {
+            symbol: b.symbol,
+            company: b.company,
+            jpName: b.jpName,
+            sector: b.sector,
+            changePct: typeof m.changePct === "number" ? m.changePct : NaN,
+            // latest.json 側は marketCapB（十億ドル単位）で保存している想定
+            marketCap: typeof m.marketCapB === "number" ? m.marketCapB : NaN
+          };
+        });
+
+        statusEl.textContent = "読み込み完了．";
         render();
       }catch(e){
         console.error(e);
-        statusEl.textContent = "データ取得に失敗した．APIキーやCORS設定を確認してほしい．";
-        render();
+        statusEl.textContent = "読み込みに失敗した．data/latest.json と GitHub Pages の設定を確認してほしい．";
       }
     }
 
-    // リサイズ対応
+    // リサイズ時は再描画（データはそのまま）
     let rto = null;
     window.addEventListener("resize", () => {
       clearTimeout(rto);
@@ -434,5 +385,7 @@
 
     init();
   </script>
+
 </body>
 </html>
+
